@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 
 from sklearn.preprocessing import StandardScaler
+from py2neo import Graph, Node, Relationship
+
 
 class AdvancedCommunicationGraph:
     def __init__(self, num_nodes=1000, avg_degree=8):
@@ -172,6 +174,108 @@ class AnomalyDetectionFramework:
         plt.title("Communication Graph with Anomalous Edges Highlighted")
         plt.show()
 
+
+class Neo4jExporter(AdvancedCommunicationGraph):
+    def __init__(self, num_nodes=1000, avg_degree=5):
+        super().__init__(num_nodes, avg_degree)
+        self.generate_nodes()
+        self.generate_edges()
+        
+    def export_to_csv(self, nodes_file="nodes.csv", edges_file="relationships.csv"):
+        """Export graph data to Neo4j-compatible CSV files"""
+        # Prepare node data
+        node_df = pd.DataFrame(self.nodes)
+        
+        # Prepare edge data
+        edge_df = pd.DataFrame(self.edges)
+        edge_df = edge_df.rename(columns={
+            'source': 'src',
+            'target': 'dst',
+            'comms_volume': 'comms',
+            'encrypted_ratio': 'encrypted',
+            'time_diff': 'time_diff_mean'
+        })
+        
+        # Save to CSV
+        node_df.to_csv(nodes_file, index=False)
+        edge_df.to_csv(edges_file, index=False)
+        
+        # Print Cypher commands for importing
+        print("\nNeo4j Import Commands:")
+        print("\n1. First, load nodes:")
+        print("""
+LOAD CSV WITH HEADERS FROM 'file:///nodes.csv' AS row
+CREATE (:User {
+    nodeId: toInteger(row.id),
+    department: row.department,
+    clearance: row.clearance,
+    riskScore: toFloat(row.risk_score),
+    loginAttempts: toInteger(row.login_attempts),
+    accessLevel: toInteger(row.access_level),
+    tenure: toFloat(row.tenure),
+    authFailures: toInteger(row.auth_failures)
+})
+        """)
+        
+        print("\n2. Then, load relationships:")
+        print("""
+LOAD CSV WITH HEADERS FROM 'file:///relationships.csv' AS row
+MATCH (source:User {nodeId: toInteger(row.src)})
+MATCH (target:User {nodeId: toInteger(row.dst)})
+CREATE (source)-[:COMMUNICATES {
+    comms: toInteger(row.comms),
+    encrypted: toFloat(row.encrypted),
+    sensitiveKeywords: toInteger(row.sensitive_keywords),
+    timeDiffMean: toFloat(row.time_diff_mean),
+    clearanceDiff: toInteger(row.clearance_diff)
+}]->(target)
+        """)
+        
+        return node_df, edge_df
+
+    def export_to_neo4j(self, uri="bolt://localhost:7687", user="neo4j", password="password"):
+        """Export directly to Neo4j using py2neo"""
+        try:
+            # Connect to Neo4j
+            graph = Graph(uri, auth=(user, password))
+            
+            # Clear existing data
+            graph.run("MATCH (n) DETACH DELETE n")
+            
+            # Create nodes
+            print("Creating nodes...")
+            nodes = {}
+            for node_data in self.nodes:
+                node = Node("User",
+                          nodeId=node_data['id'],
+                          department=node_data['department'],
+                          clearance=node_data['clearance'],
+                          riskScore=float(node_data['risk_score']),
+                          loginAttempts=int(node_data['login_attempts']),
+                          accessLevel=int(node_data['access_level']),
+                          tenure=float(node_data['tenure']),
+                          authFailures=int(node_data['auth_failures']))
+                graph.create(node)
+                nodes[node_data['id']] = node
+            
+            # Create relationships
+            print("Creating relationships...")
+            for edge in self.edges:
+                src_node = nodes[edge['source']]
+                dst_node = nodes[edge['target']]
+                rel = Relationship(src_node, "COMMUNICATES", dst_node,
+                                 comms=int(edge['comms_volume']),
+                                 encrypted=float(edge['encrypted_ratio']),
+                                 sensitiveKeywords=int(edge['sensitive_keywords']),
+                                 timeDiffMean=float(edge['time_diff']),
+                                 clearanceDiff=int(edge['clearance_diff']))
+                graph.create(rel)
+                
+            print("Export completed successfully!")
+            
+        except Exception as e:
+            print(f"Error during export: {str(e)}")
+            
 # Example Usage
 # if __name__ == "__main__":
 #     # Generate synthetic graph
@@ -207,4 +311,8 @@ if __name__ == "__main__":
     detector.train(epochs=50)
     scores, anomalies = detector.detect_anomalies()
     detector.visualize_anomalies(anomalies)
+
+    # Export to Neo4j
+    exporter = Neo4jExporter(num_nodes=500, avg_degree=8)
+    nodes_df, edges_df = exporter.export_to_csv()
 
